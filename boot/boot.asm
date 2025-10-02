@@ -1,54 +1,93 @@
- [BITS 16]
-[ORG 0x7C00]
+ ; --- Bootloader Setup ---
+[org 0x7c00]        ; BIOS loads us here
 
+KERNEL_SECTORS   equ 10        ; number of sectors to load
+KERNEL_LOAD_SEG  equ 0x1000    ; load segment
+KERNEL_LOAD_OFF  equ 0x0000    ; offset (so linear = 0x10000)
+
+jmp short start
+nop
+
+; --- Data Section ---
+boot_msg   db "Booting ShittimChest OS...", 0
+disk_error db "Disk Read Error", 0
+
+; --- Code Start ---
 start:
-    cli
+    ; Setup segments
     xor ax, ax
     mov ds, ax
     mov es, ax
     mov ss, ax
-    mov sp, 0x7C00
-    sti
+    mov sp, 0x7c00
 
-    mov [BOOT_DRIVE], dl     ; save BIOS boot drive
-
-    mov si, msg
+    ; Print boot message
+    mov si, boot_msg
     call print_string
 
-    ; load kernel (sector 2) to 0x1000
-    mov ax, 0x0000
+    ; Load kernel (from sector 2 onwards)
+    mov ax, KERNEL_LOAD_SEG
     mov es, ax
-    mov bx, 0x1000           ; ES:BX = 0000:1000
-    mov ah, 0x02             ; BIOS read sectors
-    mov al, 1                ; sectors to read
-    mov ch, 0                ; cylinder
-    mov cl, 2                ; sector number (start at 2)
-    mov dh, 0                ; head
-    mov dl, [BOOT_DRIVE]     ; boot drive
+    mov bx, KERNEL_LOAD_OFF
 
+    mov ah, 0x02              ; BIOS read sectors
+    mov al, KERNEL_SECTORS    ; number of sectors
+    mov ch, 0x00              ; cylinder 0
+    mov cl, 0x02              ; sector 2
+    mov dh, 0x00              ; head 0
+    mov dl, 0x00              ; drive 0 (floppy A:)
     int 0x13
-    jc disk_error
+    jc disk_fail              ; if error -> fail
 
-    jmp 0x0000:0x1000        ; jump to kernel
+    ; Switch to protected mode
+    cli
+    lgdt [gdt_descriptor]
+    mov eax, cr0
+    or eax, 1
+    mov cr0, eax
+    jmp 0x08:protected_mode
 
-disk_error:
-    mov si, err
-    call print_string
-    jmp $
+; --- Protected Mode ---
+[bits 32]
+protected_mode:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    mov esp, 0x90000
 
+    jmp 0x10000               ; jump to kernel entry
+
+; --- Utility: Print string ---
+[bits 16]
 print_string:
     lodsb
     or al, al
     jz .done
-    mov ah, 0x0E
+    mov ah, 0x0e
     int 0x10
     jmp print_string
 .done:
     ret
 
-msg db "Booting ShittimChest OS...", 0
-err db "Disk error!", 0
-BOOT_DRIVE db 0
+disk_fail:
+    mov si, disk_error
+    call print_string
+    hlt
 
-times 510-($-$$) db 0
-dw 0xAA55
+; --- GDT ---
+gdt_start:
+gdt_null: dq 0x0000000000000000
+gdt_code: dq 0x00cf9a000000ffff
+gdt_data: dq 0x00cf92000000ffff
+gdt_end:
+
+gdt_descriptor:
+    dw gdt_end - gdt_start - 1
+    dd gdt_start
+
+; --- Boot Signature ---
+times 510 - ($ - $$) db 0
+dw 0xaa55
